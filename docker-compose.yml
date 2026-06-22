@@ -1,0 +1,20 @@
+services:
+  wheel-scout:
+    build: .
+    container_name: wheel-scout
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # Persist Schwab OAuth token across restarts
+      - ./schwab_token.json:/app/schwab_token.json
+      # Optional: custom ticker list
+      - ./tickers.txt:/app/tickers.txt:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
