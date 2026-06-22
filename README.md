@@ -1,8 +1,8 @@
 # Wheel Scout 🛞
 
-Daily options wheel strategy scanner — screens Schwab options chains, ranks cash-secured put candidates, and pushes results to Discord.
+Daily options wheel strategy scanner — screens Alpaca options chains, ranks cash-secured put candidates, and pushes results to Discord.
 
-**Gio Mini Labs** — [github.com/GioMiniLabs/wheel-scout](https://github.com/GioMiniLabs/wheel-scout)
+**MiniGioLabs** — [github.com/MiniGioLabs/wheel-scout](https://github.com/MiniGioLabs/wheel-scout)
 
 ## How It Works
 
@@ -15,7 +15,7 @@ Mon-Fri 8:00 AM ET
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│  Schwab API      │  Options chains + quotes
+│  Alpaca API      │  Options chains + quotes + Greeks
 └────────┬────────┘
          ▼
 ┌─────────────────┐
@@ -31,15 +31,13 @@ Mon-Fri 8:00 AM ET
 
 ## Screening Methodology
 
-The wheel strategy sells cash-secured puts on quality stocks, collects premium, and if assigned, sells covered calls at cost basis. Screening is everything.
-
 | Tier | Filter | Rule |
 |------|--------|------|
-| 🚫 **T1** | Underlying price | $10–$200 |
-| 🚫 **T1** | Open interest | ≥ 100 |
-| 🚫 **T1** | Avg daily volume | ≥ 500K |
+| 🚫 **T1** | Underlying price | $10–$500 |
+| 🚫 **T1** | Open interest | ≥ 100 (skip if unavailable) |
+| 🚫 **T1** | Avg daily volume | ≥ 500K (skip if unavailable) |
 | 🚫 **T1** | Bid-ask spread | ≤ 5% of mid |
-| 🚫 **T1** | DTE window | 21–35 days |
+| 🚫 **T1** | DTE window | 14–42 days (2–6 weeks) |
 | 💰 **T2** | Annualized return | ≥ 15% `(premium/strike) × (365/DTE)` |
 | 💰 **T2** | Put delta | 0.20–0.30 |
 | 💰 **T2** | Min premium | ≥ $0.30/contract |
@@ -53,18 +51,27 @@ The wheel strategy sells cash-secured puts on quality stocks, collects premium, 
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) (or pip)
-- Schwab developer account (free)
-- Discord webhook URL
+- Alpaca Markets account (free paper trading)
 
 ### 1. Clone & install
 
 ```bash
-git clone https://github.com/GioMiniLabs/wheel-scout.git
+git clone https://github.com/MiniGioLabs/wheel-scout.git
 cd wheel-scout
 uv sync
 ```
 
-### 2. Configure
+### 2. Get Alpaca API keys
+
+1. Sign up at [app.alpaca.markets](https://app.alpaca.markets)
+2. Switch to **Paper Trading** (left sidebar)
+3. Generate API keys — copy Key ID + Secret Key
+
+### 3. Create Discord webhook
+
+Discord → Channel Settings → Integrations → Webhooks → New Webhook → Copy URL
+
+### 4. Configure
 
 ```bash
 cp .env.example .env
@@ -73,23 +80,19 @@ cp .env.example .env
 Fill in:
 
 ```env
-SCHWAB_APP_KEY=your_schwab_app_key
-SCHWAB_SECRET=your_schwab_secret
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/.../...
+ALPACA_API_KEY=your_key_id
+ALPACA_SECRET_KEY=your_secret_key
+ALPACA_PAPER=true
+DISCORD_WEBHOOK_URL=your_webhook_url
 ```
 
-Get Schwab keys at [developer.schwab.com](https://developer.schwab.com).
-Create a Discord webhook: Channel Settings → Integrations → Webhooks → New Webhook.
-
-### 3. Run
+### 5. Run
 
 ```bash
 uv run uvicorn wheel_scout.main:app --host 0.0.0.0 --port 8000
 ```
 
-On first run, Schwab OAuth opens a browser for authentication. A `schwab_token.json` file is saved for subsequent runs.
-
-### 4. Verify
+### 6. Verify
 
 ```bash
 # Health check
@@ -103,25 +106,25 @@ curl http://localhost:8000/scan
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Status, config check (Schwab + Discord) |
-| GET | `/scan` | Trigger an on-demand scan — returns `ScanResult` |
+| GET | `/health` | Status, provider + Discord config check |
+| GET | `/scan` | Trigger on-demand scan — returns `ScanResult` |
 
 ## Configuration
 
-All settings are in `.env` (or environment variables):
+All settings via `.env` (or environment variables):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SCHWAB_APP_KEY` | — | Schwab API app key |
-| `SCHWAB_SECRET` | — | Schwab API secret |
+| `ALPACA_API_KEY` | — | Alpaca API key ID |
+| `ALPACA_SECRET_KEY` | — | Alpaca API secret |
+| `ALPACA_PAPER` | true | Use paper trading endpoint |
 | `DISCORD_WEBHOOK_URL` | — | Discord webhook for notifications |
-| `DTE_MIN` | 21 | Minimum days to expiration |
-| `DTE_MAX` | 35 | Maximum days to expiration |
+| `DTE_MIN` | 14 | Minimum days to expiration |
+| `DTE_MAX` | 42 | Maximum days to expiration |
 | `MIN_ANNUALIZED_RETURN` | 15 | Min annualized return % |
 | `MIN_PREMIUM` | 0.30 | Min premium per contract ($) |
 | `MIN_DELTA` | 0.20 | Minimum delta (absolute) |
 | `MAX_DELTA` | 0.30 | Maximum delta (absolute) |
-| `SCAN_SCHEDULE_CRON` | `0 8 * * 1-5` | Cron expression (Mon-Fri 8 AM ET) |
 | `CANDIDATE_LIMIT` | 10 | Max results in Discord message |
 
 ## Docker
@@ -141,13 +144,14 @@ curl http://localhost:8000/scan
 ```
 src/wheel_scout/
 ├── main.py              # FastAPI app + APScheduler
-├── config.py            # Pydantic Settings
-├── schwab/              # Schwab API client
-│   ├── client.py        # OAuth auth, chain + quote fetcher
+├── config.py            # Pydantic Settings (Alpaca + Discord)
+├── schwab/              # Provider clients
+│   ├── client.py        # Schwab client (OAuth fallback)
+│   ├── alpaca_client.py # Alpaca client (instant setup)
 │   └── models.py        # OptionContract, OptionChain, TickerQuote
 ├── scanner/             # Screening pipeline
 │   ├── filters.py       # 8 deterministic filter functions
-│   ├── engine.py        # 3-tier funnel orchestrator
+│   ├── engine.py        # 3-tier funnel orchestrator (provider-agnostic)
 │   ├── models.py        # Candidate + ScanResult
 │   └── universe.py      # 147-ticker default list
 ├── earnings/            # Nasdaq earnings calendar (free, no API key)
@@ -156,6 +160,20 @@ src/wheel_scout/
     └── discord.py        # Webhook sender + markdown formatter
 ```
 
+## Discord Output
+
+```
+🔍 Wheel Scout — Mon Jun 22, 2026
+*2–6 Week Cash-Secured Puts*
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+🥇 INTC — Sell Thu Jul 17 $126 Put
+   Premium: $7.01/contract | Ann.Ret: 81.2% | Δ: 0.29
+   Spread: $6.90–$7.12 | Underlying: $126.45 | OI: 0
+🥈 INTC — Sell Thu Jul 17 $125 Put
+   Premium: $6.61/contract | Ann.Ret: 77.2% | Δ: 0.29
+   ...
+```
+
 ## License
 
-MIT — Gio Mini Labs
+MIT — MiniGioLabs

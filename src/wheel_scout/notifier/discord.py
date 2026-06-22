@@ -37,7 +37,7 @@ class DiscordNotifier:
         medals = ["🥇", "🥈", "🥉"]
         lines = [
             f"🔍 **Wheel Scout — {self._today_label()}**",
-            f"*{settings.DTE_MIN}–{settings.DTE_MAX} DTE Cash-Secured Puts*",
+            f"*2–6 Week Cash-Secured Puts*",
             "▔" * 28,
         ]
 
