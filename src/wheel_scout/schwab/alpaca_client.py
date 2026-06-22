@@ -1,58 +1,50 @@
 """Alpaca Markets client for options chains and quotes.
 
-Mirrors the Schwab client interface so the scanner engine is provider-agnostic.
-Uses alpaca-py for clean async access. Paper trading by default.
+Uses alpaca-py's OptionHistoricalDataClient and StockHistoricalDataClient.
+Returns the same OptionChain/OptionContract/TickerQuote models as Schwab.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 
 from alpaca.data import OptionChainRequest, StockLatestQuoteRequest
-from alpaca.data.live import StockDataStream
-from alpaca.trading.client import TradingClient
+from alpaca.data.historical import (
+    OptionHistoricalDataClient,
+    StockHistoricalDataClient,
+)
 
 from .models import OptionChain, OptionContract, TickerQuote
 from ..config import settings
 
 logger = logging.getLogger(__name__)
 
+# Option symbol format: AAPL260717P00292500
+# = ticker + YYMMDD + P/C + strike*1000 (8 digits, zero-padded)
+_SYM_RE = re.compile(r"^([A-Z]+)(\d{6})([PC])(\d{8})$")
+
 
 class AlpacaClient:
-    """Wraps alpaca-py for options chain and quote data.
-
-    Requires ALPACA_API_KEY and ALPACA_SECRET_KEY in environment.
-    Uses paper trading endpoint by default (ALPACA_PAPER=true).
-    """
+    """Wraps alpaca-py for options chain and quote data."""
 
     def __init__(self) -> None:
-        self._trade_client: TradingClient | None = None
-        self._option_client = None  # OptionDataClient
+        self._option_client: OptionHistoricalDataClient | None = None
+        self._stock_client: StockHistoricalDataClient | None = None
 
     @property
     def configured(self) -> bool:
         return settings.alpaca_configured
 
     def _ensure_clients(self) -> None:
-        """Lazy-init Alpaca clients."""
-        if self._trade_client is not None:
+        if self._option_client is not None:
             return
-
-        from alpaca.data.option import OptionDataClient
-
-        base_url = (
-            "https://paper-api.alpaca.markets"
-            if settings.ALPACA_PAPER
-            else "https://api.alpaca.markets"
-        )
-
-        self._trade_client = TradingClient(
+        self._option_client = OptionHistoricalDataClient(
             api_key=settings.ALPACA_API_KEY,
             secret_key=settings.ALPACA_SECRET_KEY,
-            paper=settings.ALPACA_PAPER,
         )
-        self._option_client = OptionDataClient(
+        self._stock_client = StockHistoricalDataClient(
             api_key=settings.ALPACA_API_KEY,
             secret_key=settings.ALPACA_SECRET_KEY,
         )
@@ -66,119 +58,130 @@ class AlpacaClient:
     ) -> OptionChain:
         """Fetch put options chain for a symbol within DTE range."""
         self._ensure_clients()
-
         dte_min = dte_min or settings.DTE_MIN
         dte_max = dte_max or settings.DTE_MAX
 
-        today = datetime.now(timezone.utc).date()
+        today = date.today()
         from_date = today + timedelta(days=dte_min)
         to_date = today + timedelta(days=dte_max)
 
-        # Get latest quote for underlying price
+        # Get stock quote for underlying price
         try:
             quote_req = StockLatestQuoteRequest(symbol_or_symbols=[symbol])
-            quotes = self._option_client.get_stock_latest_quote(quote_req)
-            underlying_price = float(quotes.get(symbol, type("q", (), {"ask_price": 0})()).ask_price or 0)
+            quotes = self._stock_client.get_stock_latest_quote(quote_req)
+            quote_obj = quotes.get(symbol)
+            underlying_price = float(quote_obj.ask_price or 0) if quote_obj else 0.0
         except Exception:
             underlying_price = 0.0
 
-        # Fetch options contracts
+        # Fetch options chain
         try:
             chain_req = OptionChainRequest(
                 underlying_symbol=symbol,
                 expiration_date_gte=from_date,
                 expiration_date_lte=to_date,
                 type="put",
-                limit=120,  # reasonable cap per chain
+                limit=200,
             )
-            contracts = self._option_client.get_option_chain(chain_req)
+            raw = self._option_client.get_option_chain(chain_req)
         except Exception as exc:
             logger.warning("Alpaca options chain error for %s: %s", symbol, exc)
             return OptionChain(
-                symbol=symbol,
-                underlying_price=underlying_price,
-                avg_volume=0,
-                puts=[],
-                calls=[],
+                symbol=symbol, underlying_price=underlying_price,
+                avg_volume=0, puts=[], calls=[],
                 fetched_at=datetime.now(timezone.utc).isoformat(),
             )
 
-        # Get snapshots for Greeks
-        snapshot_symbols = [c.symbol for c in contracts if hasattr(c, "symbol")]
-        snapshots = {}
-        if snapshot_symbols:
-            try:
-                from alpaca.data import OptionSnapshotRequest
-                snap_req = OptionSnapshotRequest(symbol_or_symbols=snapshot_symbols[:50])
-                snaps = self._option_client.get_option_snapshots(snap_req)
-                snapshots = {s.symbol: s for s in snaps if hasattr(s, "symbol")}
-            except Exception:
-                pass
-
+        # Parse the dict response (keyed by option symbol → OptionsSnapshot objects)
         puts: list[OptionContract] = []
-        for c in contracts:
-            sym = getattr(c, "symbol", f"{symbol}_PUT")
-            snap = snapshots.get(sym)
+        if isinstance(raw, dict):
+            for opt_symbol, snap in raw.items():
+                if not hasattr(snap, "symbol"):
+                    continue
 
-            strike = float(getattr(c, "strike_price", 0))
-            exp_str = str(getattr(c, "expiration_date", ""))
-            dte = (datetime.fromisoformat(exp_str).date() - today).days if exp_str else 0
+                m = _SYM_RE.match(opt_symbol or "")
+                if not m:
+                    continue
 
-            bid = float(snap.bid_price) if snap and snap.bid_price else 0.0
-            ask = float(snap.ask_price) if snap and snap.ask_price else 0.0
-            mid = (bid + ask) / 2 if bid + ask > 0 else 0.0
-            spread = (ask - bid) / mid if mid > 0 else 1.0
+                tkr, yymmdd, pc, strike_str = m.groups()
+                if pc != "P":
+                    continue
 
-            puts.append(OptionContract(
-                symbol=sym,
-                put_call="PUT",
-                strike=strike,
-                expiration_date=exp_str,
-                days_to_expiration=dte,
-                bid=round(bid, 2),
-                ask=round(ask, 2),
-                mid=round(mid, 2),
-                last=float(snap.last_price) if snap and snap.last_price else 0.0,
-                delta=float(snap.greeks.delta) if snap and snap.greeks and snap.greeks.delta else 0.0,
-                gamma=float(snap.greeks.gamma) if snap and snap.greeks and snap.greeks.gamma else 0.0,
-                theta=float(snap.greeks.theta) if snap and snap.greeks and snap.greeks.theta else 0.0,
-                vega=float(snap.greeks.vega) if snap and snap.greeks and snap.greeks.vega else 0.0,
-                implied_volatility=float(snap.implied_volatility) if snap and snap.implied_volatility else 0.0,
-                open_interest=int(snap.open_interest) if snap and snap.open_interest else 0,
-                volume=int(snap.volume) if snap and snap.volume else 0,
-                bid_ask_spread_pct=round(spread, 4),
-            ))
+                strike = float(strike_str) / 1000.0
+                try:
+                    exp_date = datetime.strptime(yymmdd, "%y%m%d").date()
+                except ValueError:
+                    continue
+                dte_val = (exp_date - today).days
+
+                # Greeks (may be None for illiquid strikes)
+                gr = snap.greeks
+                delta_val = float(gr.delta or 0) if gr else 0.0
+                gamma_val = float(gr.gamma or 0) if gr else 0.0
+                theta_val = float(gr.theta or 0) if gr else 0.0
+                vega_val = float(gr.vega or 0) if gr else 0.0
+
+                # Quote
+                q = snap.latest_quote
+                bid_val = float(q.bid_price or 0) if q else 0.0
+                ask_val = float(q.ask_price or 0) if q else 0.0
+                mid_val = (bid_val + ask_val) / 2 if bid_val + ask_val > 0 else 0.0
+                spread_val = (ask_val - bid_val) / mid_val if mid_val > 0 else 1.0
+
+                # IV
+                iv_val = float(snap.implied_volatility or 0)
+
+                # OI (via snapshot, approximate)
+                oi_val = 0  # v2: use get_option_snapshot for OI
+
+                puts.append(OptionContract(
+                    symbol=opt_symbol,
+                    put_call="PUT",
+                    strike=strike,
+                    expiration_date=exp_date.isoformat(),
+                    days_to_expiration=dte_val,
+                    bid=round(bid_val, 2),
+                    ask=round(ask_val, 2),
+                    mid=round(mid_val, 2),
+                    last=0.0,
+                    delta=delta_val,
+                    gamma=gamma_val,
+                    theta=theta_val,
+                    vega=vega_val,
+                    implied_volatility=iv_val,
+                    open_interest=oi_val,
+                    volume=0,
+                    bid_ask_spread_pct=round(spread_val, 4),
+                ))
 
         return OptionChain(
             symbol=symbol,
             underlying_price=underlying_price,
-            avg_volume=0,  # Alpaca doesn't provide this directly
+            avg_volume=0,
             puts=puts,
-            calls=[],  # We only care about puts for wheel strategy
+            calls=[],
             fetched_at=datetime.now(timezone.utc).isoformat(),
         )
 
     def get_quotes(self, symbols: list[str]) -> list[TickerQuote]:
-        """Batch-fetch quotes for screening (price, SMA)."""
+        """Batch-fetch stock quotes for screening."""
         self._ensure_clients()
-
         try:
             req = StockLatestQuoteRequest(symbol_or_symbols=symbols)
-            quotes = self._option_client.get_stock_latest_quote(req)
+            quotes = self._stock_client.get_stock_latest_quote(req)
         except Exception as exc:
             logger.warning("Quote batch failed: %s", exc)
             return []
 
         results: list[TickerQuote] = []
-        for symbol in symbols:
-            q = quotes.get(symbol)
+        for sym in symbols:
+            q = quotes.get(sym)
             if q:
                 results.append(TickerQuote(
-                    symbol=symbol,
+                    symbol=sym,
                     last_price=float(q.ask_price or 0),
-                    avg_volume=0,  # Not in snapshot; use separate call if needed
-                    sma_50=None,   # Not provided by Alpaca snapshot
+                    avg_volume=0,
+                    sma_50=None,
                     sector="",
                 ))
-
         return results

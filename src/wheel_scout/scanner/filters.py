@@ -24,13 +24,24 @@ def price_in_range(contract: OptionContract, quote: TickerQuote) -> bool:
 
 
 def open_interest_min(contract: OptionContract, _quote: TickerQuote) -> bool:
-    """Reject if open interest is below threshold."""
+    """Reject if open interest is below threshold.
+
+    Passes if OI data is unavailable (0) — some providers don't include it
+    in the chain response.
+    """
+    if contract.open_interest == 0:
+        return True  # data unavailable, skip check
     return contract.open_interest >= settings.MIN_OPEN_INTEREST
 
 
 def volume_min(_contract: OptionContract, quote: TickerQuote) -> bool:
-    """Reject if average daily volume is below threshold."""
-    return quote.avg_volume >= settings.MIN_AVG_VOLUME if quote.avg_volume else False
+    """Reject if average daily volume is below threshold.
+
+    Passes if volume data is unavailable (0) — some providers don't include it.
+    """
+    if quote.avg_volume == 0:
+        return True  # data unavailable, skip check
+    return quote.avg_volume >= settings.MIN_AVG_VOLUME
 
 
 def bid_ask_spread_tight(contract: OptionContract, _quote: TickerQuote) -> bool:
