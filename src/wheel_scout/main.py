@@ -1,6 +1,7 @@
 """Wheel Scout — main FastAPI application.
 
 Provides health endpoint and triggers daily options scans via APScheduler.
+Supports Schwab and Alpaca providers — auto-detects based on configured keys.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from .scanner.engine import ScreenEngine
 from .scanner.models import ScanResult
 from .scanner.universe import load_tickers
 from .schwab.client import SchwabClient
+from .schwab.alpaca_client import AlpacaClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,32 +29,37 @@ logger = logging.getLogger(__name__)
 
 # ── Singletons ─────────────────────────────────────────────────────
 
-schwab: SchwabClient | None = None
+_client = None  # SchwabClient or AlpacaClient
 engine: ScreenEngine | None = None
 notifier = DiscordNotifier()
 
-# Resolve timezone safely — fall back to UTC if tzdata not installed
+# Resolve timezone safely
 try:
     import zoneinfo
     _tz = zoneinfo.ZoneInfo(settings.SCAN_TIMEZONE)
 except Exception:
-    logging.warning(
-        "Timezone '%s' not available — falling back to UTC. "
-        "Install tzdata: uv add tzdata",
-        settings.SCAN_TIMEZONE,
-    )
     _tz = "UTC"
 
 scheduler = AsyncIOScheduler(timezone=_tz)
 
 
 def _init_components() -> None:
-    """Lazy-init Schwab client and scan engine."""
-    global schwab, engine
-    if schwab is None:
-        schwab = SchwabClient()
-        engine = ScreenEngine(schwab)
-        logger.info("Components initialized")
+    """Lazy-init the best available provider (Alpaca > Schwab)."""
+    global _client, engine
+    if _client is not None:
+        return
+    if settings.alpaca_configured:
+        _client = AlpacaClient()
+        logger.info("Using Alpaca Markets")
+    elif settings.schwab_configured:
+        _client = SchwabClient()
+        logger.info("Using Schwab")
+    else:
+        logger.warning("No provider configured — set ALPACA_API_KEY or SCHWAB_APP_KEY")
+        _client = None
+        return
+    engine = ScreenEngine(_client)
+    logger.info("Components initialized")
 
 
 # ── Scan job ───────────────────────────────────────────────────────
@@ -82,7 +89,6 @@ async def _run_daily_scan() -> ScanResult:
             errors=[str(exc)],
         )
 
-    # Always notify — even empty results are informative
     message = notifier.format_candidates(result)
     await notifier.send(message)
 
@@ -97,7 +103,6 @@ async def lifespan(app: FastAPI):
     """Start scheduler on app startup, shut down gracefully."""
     _init_components()
 
-    # Schedule the daily scan job
     hour, minute = _parse_cron(settings.SCAN_SCHEDULE_CRON)
     scheduler.add_job(
         _run_daily_scan,
@@ -121,17 +126,16 @@ async def lifespan(app: FastAPI):
 
 
 def _parse_cron(cron_expr: str) -> tuple[int, int]:
-    """Extract hour, minute from a 5-field cron expression."""
     parts = cron_expr.strip().split()
     if len(parts) >= 2:
-        return int(parts[1]), int(parts[0])  # minute, hour
-    return 8, 0  # default: 8:00 AM
+        return int(parts[1]), int(parts[0])
+    return 8, 0
 
 
 app = FastAPI(
     title="Wheel Scout",
-    description="Daily options wheel strategy scanner for Schwab.",
-    version="0.1.0",
+    description="Daily options wheel strategy scanner — Schwab + Alpaca support.",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -140,6 +144,7 @@ app = FastAPI(
 async def health() -> dict:
     return {
         "status": "ok",
+        "alpaca_configured": settings.alpaca_configured,
         "schwab_configured": settings.schwab_configured,
         "discord_configured": settings.discord_configured,
         "dte_window": f"{settings.DTE_MIN}–{settings.DTE_MAX}",

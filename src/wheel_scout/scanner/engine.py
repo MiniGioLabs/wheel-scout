@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from . import filters
 from .models import Candidate, ScanResult
 from ..config import settings
-from ..schwab.client import SchwabClient
 from ..schwab.models import OptionContract, TickerQuote
 from ..earnings.client import EarningsCache
 
@@ -22,8 +21,9 @@ logger = logging.getLogger(__name__)
 class ScreenEngine:
     """Runs the 3-tier deterministic screening pipeline."""
 
-    def __init__(self, schwab: SchwabClient) -> None:
-        self._schwab = schwab
+    def __init__(self, client) -> None:
+        """client: SchwabClient or AlpacaClient — both have get_option_chain() + get_quotes()."""
+        self._client = client
         self._earnings = EarningsCache()
 
     async def run(self, symbols: list[str]) -> ScanResult:
@@ -52,7 +52,7 @@ class ScreenEngine:
 
         for symbol in symbols:
             try:
-                chain = self._schwab.get_option_chain(symbol)
+                chain = self._client.get_option_chain(symbol)
                 quote = self._fetch_quote(symbol)
             except Exception as exc:
                 logger.debug("Skipping %s: %s", symbol, exc)
@@ -141,7 +141,7 @@ class ScreenEngine:
 
     def _fetch_quote(self, symbol: str) -> TickerQuote:
         """Fetch quote with fallback to empty/default values."""
-        quotes = self._schwab.get_quotes([symbol])
+        quotes = self._client.get_quotes([symbol])
         if quotes:
             return quotes[0]
         return TickerQuote(symbol=symbol, last_price=0.0)

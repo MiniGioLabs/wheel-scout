@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     SCHWAB_SECRET: str = ""
     SCHWAB_CALLBACK_URL: str = "https://127.0.0.1:8182"
 
+    # --- Alpaca API ---
+    ALPACA_API_KEY: str = ""
+    ALPACA_SECRET_KEY: str = ""
+    ALPACA_PAPER: bool = True  # Use paper trading endpoint
+
     # --- Discord ---
     DISCORD_WEBHOOK_URL: str = ""
 
@@ -39,6 +44,10 @@ class Settings(BaseSettings):
     @property
     def schwab_configured(self) -> bool:
         return bool(self.SCHWAB_APP_KEY and self.SCHWAB_SECRET)
+
+    @property
+    def alpaca_configured(self) -> bool:
+        return bool(self.ALPACA_API_KEY and self.ALPACA_SECRET_KEY)
 
     @property
     def discord_configured(self) -> bool:
