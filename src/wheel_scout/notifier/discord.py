@@ -43,20 +43,20 @@ class DiscordNotifier:
 
         for i, c in enumerate(result.candidates):
             medal = medals[i] if i < 3 else f"{i+1}."
+            # Format expiration date nicely (e.g., "Thu Jul 24")
+            exp_label = self._format_expiry(c.expiration_date)
             lines.append(
-                f"{medal} **{c.symbol}** — {c.days_to_expiration} DTE "
-                f"${c.strike:.0f} Put"
+                f"{medal} **{c.symbol}** — Sell {exp_label} ${c.strike:.0f} Put"
             )
             lines.append(
-                f"   Premium: ${c.premium:.2f} | "
+                f"   Premium: ${c.premium:.2f}/contract | "
                 f"Ann.Ret: {c.annualized_return_pct:.1f}% | "
                 f"Δ: {c.delta:.2f}"
             )
             lines.append(
-                f"   OI: {c.open_interest:,} | "
-                f"Spread: ${c.bid:.2f}–${c.ask:.2f} | "
-                f"Vol: {c.avg_volume // 1000 if c.avg_volume >= 1000 else c.avg_volume}"
-                + ("K" if c.avg_volume >= 1000 else "")
+                f"   Spread: ${c.bid:.2f}–${c.ask:.2f} | "
+                f"Underlying: ${c.underlying_price:.2f} | "
+                f"OI: {c.open_interest:,}"
             )
 
         lines.append("▔" * 28)
@@ -94,3 +94,13 @@ class DiscordNotifier:
     def _today_label() -> str:
         from datetime import datetime
         return datetime.now().strftime("%a %b %d, %Y")
+
+    @staticmethod
+    def _format_expiry(iso_date: str) -> str:
+        """Convert ISO date to readable format: '2026-07-17' → 'Thu Jul 17'."""
+        try:
+            from datetime import datetime
+            dt = datetime.strptime(iso_date[:10], "%Y-%m-%d")
+            return dt.strftime("%a %b %d")
+        except (ValueError, IndexError):
+            return iso_date
