@@ -1,6 +1,6 @@
 # License
 
-Copyright (c) 2026 Gio Mini Labs
+Copyright (c) 2026 Mini Gio Labs
 
 ## Permitted Use
 
@@ -13,18 +13,13 @@ You may:
 
 ## Prohibited Use
 
-Without prior written permission from Gio Mini Labs, you may **not**:
+Without prior written permission from Mini Gio Labs, you may **not**:
 
 - Use this software for any commercial purpose
 - Redistribute, sublicense, or sell the software
 - Deploy, host, or operate this software as a service
 - Modify and distribute modified versions
 - Include this software in any product or service
-
-## Commercial Licensing
-
-Interested in using this software commercially?  
-Contact: [Your contact method here]
 
 ## Disclaimer
 
