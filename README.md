@@ -173,7 +173,3 @@ src/wheel_scout/
    Premium: $6.61/contract | Ann.Ret: 77.2% | Δ: 0.29
    ...
 ```
-
-## License
-
-MIT — MiniGioLabs
